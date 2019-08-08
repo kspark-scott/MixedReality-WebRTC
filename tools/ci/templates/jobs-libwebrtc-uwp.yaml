@@ -43,6 +43,12 @@ jobs:
       restoreDirectory: ../../../solutions/packages
     timeoutInMinutes: 10
 
+  # Clean IDLs
+  - script: python $(Build.SourcesDirectory)\external\webrtc-uwp-sdk\scripts\run.py -a clean -t webrtc -p $(scriptPlatform) -x $(scriptArch) -c $(scriptConfig) --cleanOptions cleanidls --noColor
+    condition: and(succeeded(), variables['CleanIdls'])
+    workingDirectory: $(Build.SourcesDirectory)\external\webrtc-uwp-sdk\scripts
+    displayName: Clean IDLs
+
   # Build webrtc.lib
   - task: MSBuild@1
     displayName: 'Build webrtc.lib ($(buildTriple))'
