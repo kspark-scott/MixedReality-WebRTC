@@ -75,6 +75,16 @@ namespace TestAppUwp
         private bool _isRemoteAudioPlaying = false;
         private object _isRemoteAudioPlayingLock = new object();
 
+        private Dictionary<string, string> _peerIDs = new Dictionary<string, string>
+        {
+            { "kad", "03007418030054DC03005CF80800440F" },
+            { "surface", "030002F6080092A90500D8CD06000100" },
+            { "yoga", "0700E85603009615080082BD05004688" },
+            { "sparky", "0100D1A80200DFEC0300A8700400E542" }
+        };
+        private const string _localPeer = "sparky";
+        private const string _remotePeer = "kad";
+
         /// <summary>
         /// The underlying <see cref="PeerConnection"/> object.
         /// </summary>
@@ -139,6 +149,7 @@ namespace TestAppUwp
             get
             {
                 var profileIndex = VideoProfileComboBox.SelectedIndex;
+                profileIndex = 0;
                 if ((profileIndex < 0) || (profileIndex >= VideoProfiles.Count))
                 {
                     return null;
@@ -191,8 +202,8 @@ namespace TestAppUwp
 
             // HACK - For debugging: deterministic 2-instance value paired with each other
             var idx = HACK_GetVideoDeviceIndex();
-            localPeerUidTextBox.Text = GetDeviceUniqueIdLikeUnity((byte)idx);
-            remotePeerUidTextBox.Text = GetDeviceUniqueIdLikeUnity((byte)(1 - idx));
+            localPeerUidTextBox.Text = _peerIDs[_localPeer];
+            remotePeerUidTextBox.Text = _peerIDs[_remotePeer];
 
             dssSignaler.OnFailure += DssSignaler_OnFailure;
             dssSignaler.OnPollingDone += DssSignaler_OnPollingDone;
@@ -968,7 +979,7 @@ namespace TestAppUwp
                     var recordMediaDesc = SelectedRecordMediaDesc ?? videoProfile.SupportedRecordMediaDescription[0];
                     width = recordMediaDesc.Width;
                     height = recordMediaDesc.Height;
-                    framerate = recordMediaDesc.FrameRate;
+                    framerate = 30; // recordMediaDesc.FrameRate;
                 }
 
                 localVideoPlayer.Source = null;
@@ -1014,8 +1025,8 @@ namespace TestAppUwp
                         dssStatsTimer.Start();
                         startLocalVideo.Content = "Stop local video";
                         var idx = HACK_GetVideoDeviceIndex(); //< HACK
-                        localPeerUidTextBox.Text = GetDeviceUniqueIdLikeUnity((byte)idx); //< HACK
-                        remotePeerUidTextBox.Text = GetDeviceUniqueIdLikeUnity((byte)(1 - idx)); //< HACK
+                        localPeerUidTextBox.Text = _peerIDs[_localPeer];
+                        remotePeerUidTextBox.Text = _peerIDs[_remotePeer];
                         localVideoSourceName.Text = $"({VideoCaptureDevices[idx].DisplayName})"; //< HACK
                         //localVideo.MediaPlayer.Play();
                         lock (_isLocalVideoPlayingLock)
