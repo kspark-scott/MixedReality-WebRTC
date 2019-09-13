@@ -149,7 +149,6 @@ namespace TestAppUwp
             get
             {
                 var profileIndex = VideoProfileComboBox.SelectedIndex;
-                profileIndex = 0;
                 if ((profileIndex < 0) || (profileIndex >= VideoProfiles.Count))
                 {
                     return null;
@@ -365,6 +364,7 @@ namespace TestAppUwp
         /// </summary>
         private void UpdateVideoProfiles()
         {
+            int currentSelection = VideoProfileComboBox.SelectedIndex;
             VideoProfiles.Clear();
 
             // Get the video capture device selected by the user
@@ -403,6 +403,7 @@ namespace TestAppUwp
             {
                 VideoProfiles.Add(profile);
             }
+            VideoProfileComboBox.SelectedIndex = ((currentSelection >= 0) && (currentSelection < VideoProfiles.Count)) ? currentSelection : 0;
         }
 
         private void VideoCaptureDeviceList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -979,7 +980,7 @@ namespace TestAppUwp
                     var recordMediaDesc = SelectedRecordMediaDesc ?? videoProfile.SupportedRecordMediaDescription[0];
                     width = recordMediaDesc.Width;
                     height = recordMediaDesc.Height;
-                    framerate = 30; // recordMediaDesc.FrameRate;
+                    framerate = recordMediaDesc.FrameRate;
                 }
 
                 localVideoPlayer.Source = null;
@@ -1012,7 +1013,7 @@ namespace TestAppUwp
                     }
 
                     _peerConnection.AddLocalVideoTrackAsync(captureDeviceInfo, videoProfileId, videoProfileKind,
-                    (int)width, (int)height, framerate, /* mrcEnabled = */ false).ContinueWith(addVideoTask =>
+                    (int)width, (int)height, framerate, enableMrc: false).ContinueWith(addVideoTask =>
                     {
                         // Continue inside UI thread here
                         if (addVideoTask.Exception != null)
