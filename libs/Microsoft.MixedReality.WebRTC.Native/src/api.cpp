@@ -214,6 +214,44 @@ std::unique_ptr<cricket::VideoCapturer> OpenVideoCaptureDevice(
 #endif
 }
 
+webrtc::PeerConnectionInterface::IceTransportsType ICETransportTypeToNative(
+    IceTransportType mrsValue) {
+  using Native = webrtc::PeerConnectionInterface::IceTransportsType;
+  using Impl = IceTransportType;
+  static_assert((int)Native::kNone == (int)Impl::kNone);
+  static_assert((int)Native::kNoHost == (int)Impl::kNoHost);
+  static_assert((int)Native::kRelay == (int)Impl::kRelay);
+  static_assert((int)Native::kAll == (int)Impl::kAll);
+  return static_cast<Native>(mrsValue);
+}
+
+webrtc::PeerConnectionInterface::BundlePolicy BundlePolicyToNative(
+    BundlePolicy mrsValue) {
+  using Native = webrtc::PeerConnectionInterface::BundlePolicy;
+  using Impl = BundlePolicy;
+  static_assert((int)Native::kBundlePolicyBalanced == (int)Impl::kBalanced);
+  static_assert((int)Native::kBundlePolicyMaxBundle == (int)Impl::kMaxBundle);
+  static_assert((int)Native::kBundlePolicyMaxCompat == (int)Impl::kMaxCompat);
+  return static_cast<Native>(mrsValue);
+}
+
+//< TODO - Unit test / check if RTC has already a utility like this
+std::vector<std::string> SplitString(const std::string& str, char sep) {
+  std::vector<std::string> ret;
+  size_t offset = 0;
+  for (size_t idx = str.find_first_of(sep); idx < std::string::npos;
+       idx = str.find_first_of(sep, offset)) {
+    if (idx > offset) {
+      ret.push_back(str.substr(offset, idx - offset));
+    }
+    offset = idx + 1;
+  }
+  if (offset < str.size()) {
+    ret.push_back(str.substr(offset));
+  }
+  return ret;
+}
+
 }  // namespace
 
 #if defined(WINUWP)
@@ -293,12 +331,14 @@ void MRS_CALL mrsEnumVideoCaptureDevicesAsync(
 #endif
 }
 
-PeerConnectionHandle MRS_CALL mrsPeerConnectionCreate(
-    const char** turn_urls,
-    const int no_of_urls,
-    const char* username,
-    const char* credential,
-    bool /*mandatory_receive_video*/) noexcept(kNoExceptFalseOnUWP) {
+mrsResult MRS_CALL mrsPeerConnectionCreate(
+    PeerConnectionConfiguration config,
+    PeerConnectionHandle* peerHandleOut) noexcept(kNoExceptFalseOnUWP) {
+  if (!peerHandleOut) {
+    return MRS_E_INVALID_PARAMETER;
+  }
+  *peerHandleOut = nullptr;
+
   // Ensure the factory exists
   if (g_peer_connection_factory == nullptr) {
 #if defined(WINUWP)
@@ -306,7 +346,7 @@ PeerConnectionHandle MRS_CALL mrsPeerConnectionCreate(
       InitUWPFactory();
       if (!g_winuwp_factory) {
         RTC_LOG(LS_ERROR) << "Failed to initialize the UWP factory.";
-        return nullptr;
+        return MRS_E_UNKNOWN;
       }
     }
 
@@ -319,7 +359,8 @@ PeerConnectionHandle MRS_CALL mrsPeerConnectionCreate(
     g_worker_thread->SetName("WebRTC worker thread", g_worker_thread.get());
     g_worker_thread->Start();
     g_signaling_thread = rtc::Thread::Create();
-    g_signaling_thread->SetName("WebRTC signaling thread", g_signaling_thread.get());
+    g_signaling_thread->SetName("WebRTC signaling thread",
+                                g_signaling_thread.get());
     g_signaling_thread->Start();
 
     g_peer_connection_factory = webrtc::CreatePeerConnectionFactory(
@@ -336,42 +377,27 @@ PeerConnectionHandle MRS_CALL mrsPeerConnectionCreate(
 #endif
   }
   if (!g_peer_connection_factory.get()) {
-    return {};
+    return MRS_E_UNKNOWN;
   }
 
   // Setup the connection configuration
-  webrtc::PeerConnectionInterface::RTCConfiguration config;
-  if (turn_urls != nullptr) {
-    if (no_of_urls > 0) {
-      config.servers.reserve(no_of_urls);
-      webrtc::PeerConnectionInterface::IceServer server;
-      for (int i = 0; i < no_of_urls; ++i) {
-        std::string url(turn_urls[i]);
-        if (url.length() > 0)
-          server.urls.push_back(turn_urls[i]);
-      }
-      if (username) {
-        std::string user_name(username);
-        if (user_name.length() > 0)
-          server.username = std::move(username);
-      }
-      if (credential) {
-        std::string password(credential);
-        if (password.length() > 0)
-          server.password = std::move(password);
-      }
-      config.servers.push_back(server);
-    }
+  webrtc::PeerConnectionInterface::RTCConfiguration rtc_config;
+  if (config.encoded_ice_servers != nullptr) {
+    std::string encoded_ice_servers{config.encoded_ice_servers};
+    rtc_config.servers = DecodeIceServers(encoded_ice_servers);
   }
-  config.enable_rtp_data_channel = false;
-  config.enable_dtls_srtp = true;  //< TODO - Should be true/unset for security
+  rtc_config.enable_rtp_data_channel = false;  // Always false for security
+  rtc_config.enable_dtls_srtp = true;          // Always true for security
+  rtc_config.type = ICETransportTypeToNative(config.ice_transport_type);
+  rtc_config.bundle_policy = BundlePolicyToNative(config.bundle_policy);
 
   // Create the new peer connection
   rtc::scoped_refptr<PeerConnection> peer =
-      PeerConnection::create(*g_peer_connection_factory, config);
+      PeerConnection::create(*g_peer_connection_factory, rtc_config);
   const PeerConnectionHandle handle{peer.get()};
   g_peer_connection_map.insert({handle, std::move(peer)});
-  return handle;
+  *peerHandleOut = handle;
+  return MRS_SUCCESS;
 }
 
 void MRS_CALL mrsPeerConnectionRegisterConnectedCallback(
@@ -491,7 +517,7 @@ MRS_API void MRS_CALL mrsPeerConnectionRegisterRemoteAudioFrameCallback(
   }
 }
 
-bool MRS_CALL
+mrsResult MRS_CALL
 mrsPeerConnectionAddLocalVideoTrack(PeerConnectionHandle peerHandle,
                                     VideoDeviceConfiguration config)
 #if defined(WINUWP)
@@ -502,12 +528,12 @@ mrsPeerConnectionAddLocalVideoTrack(PeerConnectionHandle peerHandle,
 {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
     if (!g_peer_connection_factory) {
-      return false;
+      return MRS_E_INVALID_OPERATION;
     }
     std::unique_ptr<cricket::VideoCapturer> video_capturer =
         OpenVideoCaptureDevice(config);
     if (!video_capturer) {
-      return false;
+      return MRS_E_UNKNOWN;
     }
 
     //// HACK - Force max size to prevent high-res HoloLens 2 camera, which also
@@ -535,39 +561,41 @@ mrsPeerConnectionAddLocalVideoTrack(PeerConnectionHandle peerHandle,
     rtc::scoped_refptr<webrtc::VideoTrackSourceInterface> video_source =
         g_peer_connection_factory->CreateVideoSource(std::move(video_capturer));
     if (!video_source) {
-      return false;
+      return MRS_E_UNKNOWN;
     }
     rtc::scoped_refptr<webrtc::VideoTrackInterface> video_track =
         g_peer_connection_factory->CreateVideoTrack(kLocalVideoLabel,
                                                     video_source);
     if (!video_track) {
-      return false;
+      return MRS_E_UNKNOWN;
     }
-    return peer->AddLocalVideoTrack(std::move(video_track));
+    return (peer->AddLocalVideoTrack(std::move(video_track)) ? MRS_SUCCESS
+                                                             : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_UNKNOWN;
 }
 
-bool MRS_CALL
+mrsResult MRS_CALL
 mrsPeerConnectionAddLocalAudioTrack(PeerConnectionHandle peerHandle) noexcept {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
     if (!g_peer_connection_factory) {
-      return false;
+      return MRS_E_INVALID_OPERATION;
     }
     rtc::scoped_refptr<webrtc::AudioSourceInterface> audio_source =
         g_peer_connection_factory->CreateAudioSource(cricket::AudioOptions());
     if (!audio_source) {
-      return false;
+      return MRS_E_UNKNOWN;
     }
     rtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track =
         g_peer_connection_factory->CreateAudioTrack(kLocalAudioLabel,
                                                     audio_source);
     if (!audio_track) {
-      return false;
+      return MRS_E_UNKNOWN;
     }
-    return peer->AddLocalAudioTrack(std::move(audio_track));
+    return (peer->AddLocalAudioTrack(std::move(audio_track)) ? MRS_SUCCESS
+                                                             : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_UNKNOWN;
 }
 
 mrsResult MRS_CALL mrsPeerConnectionAddDataChannel(
@@ -608,69 +636,73 @@ void MRS_CALL mrsPeerConnectionRemoveLocalAudioTrack(
   }
 }
 
-bool MRS_CALL
+mrsResult MRS_CALL
 mrsPeerConnectionRemoveDataChannelById(PeerConnectionHandle peerHandle,
                                        int id) noexcept {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
-    return peer->RemoveDataChannel(id);
+    return (peer->RemoveDataChannel(id) ? MRS_SUCCESS : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_INVALID_PEER_HANDLE;
 }
 
-bool MRS_CALL
+mrsResult MRS_CALL
 mrsPeerConnectionRemoveDataChannelByLabel(PeerConnectionHandle peerHandle,
                                           const char* label) noexcept {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
-    return peer->RemoveDataChannel(label);
+    return (peer->RemoveDataChannel(label) ? MRS_SUCCESS : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_INVALID_PEER_HANDLE;
 }
 
-bool MRS_CALL
+mrsResult MRS_CALL
 mrsPeerConnectionSendDataChannelMessage(PeerConnectionHandle peerHandle,
                                         int id,
                                         const void* data,
                                         uint64_t size) noexcept {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
-    return peer->SendDataChannelMessage(id, data, size);
+    return (peer->SendDataChannelMessage(id, data, size) ? MRS_SUCCESS
+                                                         : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_INVALID_PEER_HANDLE;
 }
 
-bool MRS_CALL mrsPeerConnectionAddIceCandidate(PeerConnectionHandle peerHandle,
+mrsResult MRS_CALL mrsPeerConnectionAddIceCandidate(PeerConnectionHandle peerHandle,
                                                const char* sdp,
                                                const int sdp_mline_index,
                                                const char* sdp_mid) noexcept {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
-    return peer->AddIceCandidate(sdp, sdp_mline_index, sdp_mid);
+    return (peer->AddIceCandidate(sdp, sdp_mline_index, sdp_mid)
+                ? MRS_SUCCESS
+                : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_INVALID_PEER_HANDLE;
 }
 
-bool MRS_CALL
+mrsResult MRS_CALL
 mrsPeerConnectionCreateOffer(PeerConnectionHandle peerHandle) noexcept {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
-    return peer->CreateOffer();
+    return (peer->CreateOffer() ? MRS_SUCCESS : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_INVALID_PEER_HANDLE;
 }
 
-bool MRS_CALL
+mrsResult MRS_CALL
 mrsPeerConnectionCreateAnswer(PeerConnectionHandle peerHandle) noexcept {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
-    return peer->CreateAnswer();
+    return (peer->CreateAnswer() ? MRS_SUCCESS : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_INVALID_PEER_HANDLE;
 }
 
-bool MRS_CALL
+mrsResult MRS_CALL
 mrsPeerConnectionSetRemoteDescription(PeerConnectionHandle peerHandle,
                                       const char* type,
                                       const char* sdp) noexcept {
   if (auto peer = static_cast<PeerConnection*>(peerHandle)) {
-    return peer->SetRemoteDescription(type, sdp);
+    return (peer->SetRemoteDescription(type, sdp) ? MRS_SUCCESS
+                                                  : MRS_E_UNKNOWN);
   }
-  return false;
+  return MRS_E_INVALID_PEER_HANDLE;
 }
 
 void MRS_CALL
@@ -703,11 +735,11 @@ mrsPeerConnectionClose(PeerConnectionHandle* peerHandlePtr) noexcept {
   }
 }
 
-bool MRS_CALL mrsSdpForceCodecs(const char* message,
-                                SdpFilter audio_filter,
-                                SdpFilter video_filter,
-                                char* buffer,
-                                uint64_t* buffer_size) {
+mrsResult MRS_CALL mrsSdpForceCodecs(const char* message,
+                                     SdpFilter audio_filter,
+                                     SdpFilter video_filter,
+                                     char* buffer,
+                                     uint64_t* buffer_size) {
   RTC_CHECK(message);
   RTC_CHECK(buffer);
   RTC_CHECK(buffer_size);
@@ -736,11 +768,11 @@ bool MRS_CALL mrsSdpForceCodecs(const char* message,
   const size_t size = out_message.size();
   *buffer_size = size + 1;
   if (capacity < size + 1) {
-    return false;
+    return MRS_E_INVALID_PARAMETER;
   }
   memcpy(buffer, out_message.c_str(), size);
   buffer[size] = '\0';
-  return true;
+  return MRS_SUCCESS;
 }
 
 void MRS_CALL mrsMemCpy(void* dst, const void* src, uint64_t size) {
@@ -748,11 +780,11 @@ void MRS_CALL mrsMemCpy(void* dst, const void* src, uint64_t size) {
 }
 
 void MRS_CALL mrsMemCpyStride(void* dst,
-                              int dst_stride,
+                              int32_t dst_stride,
                               const void* src,
-                              int src_stride,
-                              int elem_size,
-                              int elem_count) {
+                              int32_t src_stride,
+                              int32_t elem_size,
+                              int32_t elem_count) {
   RTC_CHECK(dst);
   RTC_CHECK(dst_stride >= elem_size);
   RTC_CHECK(src);

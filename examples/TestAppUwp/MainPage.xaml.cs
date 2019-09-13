@@ -305,8 +305,8 @@ namespace TestAppUwp
             PluginInitialized = false;
 
             // Assign STUN server(s) before calling InitializeAsync()
-            _peerConnection.Servers.Clear(); // We use only one server in this demo
-            _peerConnection.Servers.Add("stun:" + stunServer.Text);
+            var config = new PeerConnectionConfiguration();
+            config.IceServers.Add(new IceServer { Urls = { "stun:" + stunServer.Text } });
 
             // Ensure that the UWP app was authorized to capture audio (cap:microphone)
             // and video (cap:webcam), otherwise the native plugin will fail.
@@ -329,7 +329,7 @@ namespace TestAppUwp
                             LogMessage($"Access to A/V denied, check app permissions: {accessTask.Exception.Message}");
                             throw accessTask.Exception;
                         }
-                        _peerConnection.InitializeAsync().ContinueWith((initTask) =>
+                        _peerConnection.InitializeAsync(config).ContinueWith((initTask) =>
                         {
                             if (initTask.Exception != null)
                             {
@@ -1058,12 +1058,6 @@ namespace TestAppUwp
             //remotePresentText.Text = $"Present: {remoteVideoBridge.FramePresent:F2}";
             //remoteSkipText.Text = $"Skip: {remoteVideoBridge.FrameSkip:F2}";
             //remoteLateText.Text = $"Late: {remoteVideoBridge.LateFrame:F2}";
-        }
-
-        private void StunServerTextChanged(object sender, TextChangedEventArgs e)
-        {
-            _peerConnection.Servers.Clear(); // We use only one server in this demo
-            _peerConnection.Servers.Add("stun:" + stunServer.Text);
         }
 
         private void CreateOfferButtonClicked(object sender, RoutedEventArgs e)
