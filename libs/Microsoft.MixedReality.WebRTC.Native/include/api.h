@@ -34,10 +34,12 @@ constexpr const mrsResult MRS_SUCCESS{0};
 
 // Unknown generic error
 constexpr const mrsResult MRS_E_UNKNOWN{0x80000000};
+constexpr const mrsResult MRS_E_INVALID_PARAMETER{0x80000001};
+constexpr const mrsResult MRS_E_INVALID_OPERATION{0x80000002};
 
-// Peer conection (0x0xx)
-constexpr const mrsResult MRS_E_INVALID_PEER_HANDLE{0x80000001};
-constexpr const mrsResult MRS_E_PEER_NOT_INITIALIZED{0x80000002};
+// Peer conection (0x1xx)
+constexpr const mrsResult MRS_E_INVALID_PEER_HANDLE{0x80000101};
+constexpr const mrsResult MRS_E_PEER_NOT_INITIALIZED{0x80000102};
 
 // Data (0x3xx)
 constexpr const mrsResult MRS_E_SCTP_NOT_NEGOTIATED{0x80000301};
@@ -188,14 +190,43 @@ inline constexpr bool kNoExceptFalseOnUWP = false;
 inline constexpr bool kNoExceptFalseOnUWP = true;
 #endif
 
+/// ICE transport type. See webrtc::PeerConnectionInterface::IceTransportsType.
+/// Currently values are aligned, but kept as a separate structure to allow
+/// backward compatilibity in case of changes in WebRTC.
+enum class IceTransportType : int32_t {
+  kNone = 0,
+  kRelay = 1,
+  kNoHost = 2,
+  kAll = 3
+};
+
+/// Bundle policy. See webrtc::PeerConnectionInterface::BundlePolicy.
+/// Currently values are aligned, but kept as a separate structure to allow
+/// backward compatilibity in case of changes in WebRTC.
+enum class BundlePolicy : int32_t {
+  kBalanced = 0,
+  kMaxBundle = 1,
+  kMaxCompat = 2
+};
+
+/// Configuration to intialize a peer connection object.
+struct PeerConnectionConfiguration {
+  /// ICE servers, encoded as a single string buffer.
+  /// See |EncodeIceServers| and |DecodeIceServers|.
+  const char* encoded_ice_servers = nullptr;
+
+  /// ICE transport type for the connection.
+  IceTransportType ice_transport_type = IceTransportType::kAll;
+
+  /// Bundle policy for the connection.
+  BundlePolicy bundle_policy = BundlePolicy::kBalanced;
+};
+
 /// Create a peer connection and return a handle to it.
 /// On UWP this must be invoked from another thread than the main UI thread.
-MRS_API PeerConnectionHandle MRS_CALL mrsPeerConnectionCreate(
-    const char** turn_urls,
-    const int no_of_urls,
-    const char* username,
-    const char* credential,
-    bool mandatory_receive_video) noexcept(kNoExceptFalseOnUWP);
+MRS_API mrsResult MRS_CALL mrsPeerConnectionCreate(
+    PeerConnectionConfiguration config,
+    PeerConnectionHandle* peerHandleOut) noexcept(kNoExceptFalseOnUWP);
 
 /// Register a callback fired once connected to a remote peer.
 /// To unregister, simply pass nullptr as the callback pointer.
@@ -352,13 +383,13 @@ struct VideoDeviceConfiguration {
 /// |enable_mrc| allows enabling Mixed Reality Capture on HoloLens devices, and
 /// is otherwise ignored for other video capture devices. On UWP this must be
 /// invoked from another thread than the main UI thread.
-MRS_API bool MRS_CALL mrsPeerConnectionAddLocalVideoTrack(
+MRS_API mrsResult MRS_CALL mrsPeerConnectionAddLocalVideoTrack(
     PeerConnectionHandle peerHandle,
     VideoDeviceConfiguration config) noexcept(kNoExceptFalseOnUWP);
 
 /// Add a local audio track from a local audio capture device (microphone) to
 /// the collection of tracks to send to the remote peer.
-MRS_API bool MRS_CALL
+MRS_API mrsResult MRS_CALL
 mrsPeerConnectionAddLocalAudioTrack(PeerConnectionHandle peerHandle) noexcept;
 
 /// Add a new data channel.
@@ -389,22 +420,22 @@ MRS_API void MRS_CALL mrsPeerConnectionRemoveLocalVideoTrack(
 MRS_API void MRS_CALL mrsPeerConnectionRemoveLocalAudioTrack(
     PeerConnectionHandle peerHandle) noexcept;
 
-MRS_API bool MRS_CALL
+MRS_API mrsResult MRS_CALL
 mrsPeerConnectionRemoveDataChannelById(PeerConnectionHandle peerHandle,
                                        int id) noexcept;
 
-MRS_API bool MRS_CALL
+MRS_API mrsResult MRS_CALL
 mrsPeerConnectionRemoveDataChannelByLabel(PeerConnectionHandle peerHandle,
                                           const char* label) noexcept;
 
-MRS_API bool MRS_CALL
+MRS_API mrsResult MRS_CALL
 mrsPeerConnectionSendDataChannelMessage(PeerConnectionHandle peerHandle,
                                         int id,
                                         const void* data,
                                         uint64_t size) noexcept;
 
 /// Add a new ICE candidate received from a signaling service.
-MRS_API bool MRS_CALL
+MRS_API mrsResult MRS_CALL
 mrsPeerConnectionAddIceCandidate(PeerConnectionHandle peerHandle,
                                  const char* sdp_mid,
                                  const int sdp_mline_index,
@@ -414,19 +445,19 @@ mrsPeerConnectionAddIceCandidate(PeerConnectionHandle peerHandle,
 /// This will generate a local offer message, then fire the
 /// "LocalSdpReadytoSendCallback" callback, which should send this message via
 /// the signaling service to a remote peer.
-MRS_API bool MRS_CALL
+MRS_API mrsResult MRS_CALL
 mrsPeerConnectionCreateOffer(PeerConnectionHandle peerHandle) noexcept;
 
 /// Create a new JSEP answer to a received offer to try to establish a
 /// connection with a remote peer. This will generate a local answer message,
 /// then fire the "LocalSdpReadytoSendCallback" callback, which should send this
 /// message via the signaling service to a remote peer.
-MRS_API bool MRS_CALL
+MRS_API mrsResult MRS_CALL
 mrsPeerConnectionCreateAnswer(PeerConnectionHandle peerHandle) noexcept;
 
 /// Set a remote description received from a remote peer via the signaling
 /// service.
-MRS_API bool MRS_CALL
+MRS_API mrsResult MRS_CALL
 mrsPeerConnectionSetRemoteDescription(PeerConnectionHandle peerHandle,
                                       const char* type,
                                       const char* sdp) noexcept;
@@ -482,11 +513,11 @@ struct SdpFilter {
 /// terminator, so the size of the used part of the buffer, in bytes.
 /// Returns true on success or false if the buffer is not large enough to
 /// contain the new SDP message.
-MRS_API bool MRS_CALL mrsSdpForceCodecs(const char* message,
-                                        SdpFilter audio_filter,
-                                        SdpFilter video_filter,
-                                        char* buffer,
-                                        uint64_t* buffer_size);
+MRS_API mrsResult MRS_CALL mrsSdpForceCodecs(const char* message,
+                                             SdpFilter audio_filter,
+                                             SdpFilter video_filter,
+                                             char* buffer,
+                                             uint64_t* buffer_size);
 
 //
 // Generic utilities
@@ -499,9 +530,9 @@ MRS_API void MRS_CALL mrsMemCpy(void* dst, const void* src, uint64_t size);
 /// Optimized helper to copy a block of memory with source and destination
 /// stride.
 MRS_API void MRS_CALL mrsMemCpyStride(void* dst,
-                                      int dst_stride,
+                                      int32_t dst_stride,
                                       const void* src,
-                                      int src_stride,
-                                      int elem_size,
-                                      int elem_count);
+                                      int32_t src_stride,
+                                      int32_t elem_size,
+                                      int32_t elem_count);
 }
