@@ -32,10 +32,11 @@ using mrsResult = std::uint32_t;
 
 constexpr const mrsResult MRS_SUCCESS{0};
 
-// Unknown generic error
+// Generic errors
 constexpr const mrsResult MRS_E_UNKNOWN{0x80000000};
 constexpr const mrsResult MRS_E_INVALID_PARAMETER{0x80000001};
 constexpr const mrsResult MRS_E_INVALID_OPERATION{0x80000002};
+constexpr const mrsResult MRS_E_WRONG_THREAD{0x80000003};
 
 // Peer conection (0x1xx)
 constexpr const mrsResult MRS_E_INVALID_PEER_HANDLE{0x80000101};
@@ -77,9 +78,31 @@ using mrsVideoCaptureDeviceEnumCompletedCallback =
 /// At the end of the enumeration, invoke the optional |completedCallback| if it
 /// was provided (non-null).
 MRS_API void MRS_CALL mrsEnumVideoCaptureDevicesAsync(
-    mrsVideoCaptureDeviceEnumCallback callback,
-    void* callbackUserData,
+    mrsVideoCaptureDeviceEnumCallback enumCallback,
+    void* enumCallbackUserData,
     mrsVideoCaptureDeviceEnumCompletedCallback completedCallback,
+    void* completedCallbackUserData) noexcept;
+
+/// Callback invoked for each enumerated video capture format.
+using mrsVideoCaptureFormatEnumCallback = void(MRS_CALL*)(uint32_t width,
+                                                          uint32_t height,
+                                                          double framerate,
+                                                          uint32_t encoding,
+                                                          void* user_data);
+
+/// Callback invoked on video capture format enumeration completed.
+using mrsVideoCaptureFormatEnumCompletedCallback =
+    void(MRS_CALL*)(mrsResult result, void* user_data);
+
+/// Enumerate the video capture formats asynchronously.
+/// For each device found, invoke the mandatory |callback|.
+/// At the end of the enumeration, invoke the optional |completedCallback| if it
+/// was provided (non-null).
+MRS_API mrsResult MRS_CALL mrsEnumVideoCaptureFormatsAsync(
+    const char* device_id,
+    mrsVideoCaptureFormatEnumCallback enumCallback,
+    void* enumCallbackUserData,
+    mrsVideoCaptureFormatEnumCompletedCallback completedCallback,
     void* completedCallbackUserData) noexcept;
 
 //
@@ -105,6 +128,23 @@ using PeerConnectionIceCandidateReadytoSendCallback =
                     const char* candidate,
                     int sdpMlineindex,
                     const char* sdpMid);
+
+/// State of the ICE connection.
+/// See https://www.w3.org/TR/webrtc/#rtciceconnectionstate-enum.
+/// Note that there is a mismatch currently due to the m71 implementation.
+enum IceConnectionState : int32_t {
+  kNew = 0,
+  kChecking = 1,
+  kConnected = 2,
+  kCompleted = 3,
+  kFailed = 4,
+  kDisconnected = 5,
+  kClosed = 6,
+};
+
+/// Callback fired when the state of the ICE connection changed.
+using PeerConnectionIceStateChangedCallback =
+    void(MRS_CALL*)(void* user_data, IceConnectionState new_state);
 
 /// Callback fired when a renegotiation of the current session needs to occur to
 /// account for new parameters (e.g. added or removed tracks).
@@ -184,12 +224,6 @@ using PeerConnectionDataChannelStateCallback = void(MRS_CALL*)(void* user_data,
                                                                int state,
                                                                int id);
 
-#if defined(WINUWP)
-inline constexpr bool kNoExceptFalseOnUWP = false;
-#else
-inline constexpr bool kNoExceptFalseOnUWP = true;
-#endif
-
 /// ICE transport type. See webrtc::PeerConnectionInterface::IceTransportsType.
 /// Currently values are aligned, but kept as a separate structure to allow
 /// backward compatilibity in case of changes in WebRTC.
@@ -209,6 +243,16 @@ enum class BundlePolicy : int32_t {
   kMaxCompat = 2
 };
 
+/// SDP semantic (protocol dialect) for (re)negotiating a peer connection.
+/// This cannot be changed after the connection is established.
+enum class SdpSemantic : int32_t {
+  /// Unified Plan - default and recommended. Standardized in WebRTC 1.0.
+  kUnifiedPlan = 0,
+  /// Plan B - deprecated and soon to be removed. Do not use unless for
+  /// compability with an older implementation. This is non-standard.
+  kPlanB = 1
+};
+
 /// Configuration to intialize a peer connection object.
 struct PeerConnectionConfiguration {
   /// ICE servers, encoded as a single string buffer.
@@ -220,13 +264,17 @@ struct PeerConnectionConfiguration {
 
   /// Bundle policy for the connection.
   BundlePolicy bundle_policy = BundlePolicy::kBalanced;
+
+  /// SDP semantic for connection negotiation.
+  /// Do not use Plan B unless there is a problem with Unified Plan.
+  SdpSemantic sdp_semantic = SdpSemantic::kUnifiedPlan;
 };
 
 /// Create a peer connection and return a handle to it.
 /// On UWP this must be invoked from another thread than the main UI thread.
-MRS_API mrsResult MRS_CALL mrsPeerConnectionCreate(
-    PeerConnectionConfiguration config,
-    PeerConnectionHandle* peerHandleOut) noexcept(kNoExceptFalseOnUWP);
+MRS_API mrsResult MRS_CALL
+mrsPeerConnectionCreate(PeerConnectionConfiguration config,
+                        PeerConnectionHandle* peerHandleOut) noexcept;
 
 /// Register a callback fired once connected to a remote peer.
 /// To unregister, simply pass nullptr as the callback pointer.
@@ -247,6 +295,12 @@ MRS_API void MRS_CALL mrsPeerConnectionRegisterLocalSdpReadytoSendCallback(
 MRS_API void MRS_CALL mrsPeerConnectionRegisterIceCandidateReadytoSendCallback(
     PeerConnectionHandle peerHandle,
     PeerConnectionIceCandidateReadytoSendCallback callback,
+    void* user_data) noexcept;
+
+/// Register a callback fired when the ICE connection state changes.
+MRS_API void MRS_CALL mrsPeerConnectionRegisterIceStateChangedCallback(
+    PeerConnectionHandle peerHandle,
+    PeerConnectionIceStateChangedCallback callback,
     void* user_data) noexcept;
 
 /// Register a callback fired when a renegotiation of the current session needs
@@ -383,9 +437,9 @@ struct VideoDeviceConfiguration {
 /// |enable_mrc| allows enabling Mixed Reality Capture on HoloLens devices, and
 /// is otherwise ignored for other video capture devices. On UWP this must be
 /// invoked from another thread than the main UI thread.
-MRS_API mrsResult MRS_CALL mrsPeerConnectionAddLocalVideoTrack(
-    PeerConnectionHandle peerHandle,
-    VideoDeviceConfiguration config) noexcept(kNoExceptFalseOnUWP);
+MRS_API mrsResult MRS_CALL
+mrsPeerConnectionAddLocalVideoTrack(PeerConnectionHandle peerHandle,
+                                    VideoDeviceConfiguration config) noexcept;
 
 /// Add a local audio track from a local audio capture device (microphone) to
 /// the collection of tracks to send to the remote peer.

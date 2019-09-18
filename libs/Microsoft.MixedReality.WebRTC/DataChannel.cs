@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE in the project root for license information.
 
 using System;
+using System.Runtime.InteropServices;
 
 namespace Microsoft.MixedReality.WebRTC
 {
@@ -15,7 +16,7 @@ namespace Microsoft.MixedReality.WebRTC
     /// 
     /// https://tools.ietf.org/wg/rtcweb/
     /// 
-    /// An instance of <see cref="DataChannel"/> is created by calling <see cref="PeerConnection.AddDataChannelAsync"/>
+    /// An instance of <see cref="DataChannel"/> is created by calling <see cref="PeerConnection.AddDataChannelAsync(string,bool,bool)"/>
     /// or one of its variants. <see cref="DataChannel"/> cannot be instantiated directly.
     /// </summary>
     public class DataChannel : IDisposable
@@ -97,9 +98,17 @@ namespace Microsoft.MixedReality.WebRTC
         /// <seealso cref="SendMessage(byte[])"/>
         public event Action<byte[]> MessageReceived;
 
-        internal DataChannel(PeerConnection peerConnection, int id, string label, bool ordered, bool reliable)
+        /// <summary>
+        /// GC handle keeping the internal delegates alive while they are registered
+        /// as callbacks with the native code.
+        /// </summary>
+        private GCHandle _handle;
+
+        internal DataChannel(PeerConnection peer, GCHandle handle,
+            int id, string label, bool ordered, bool reliable)
         {
-            PeerConnection = peerConnection;
+            _handle = handle;
+            PeerConnection = peer;
             ID = id;
             Label = label;
             Ordered = ordered;
@@ -107,21 +116,24 @@ namespace Microsoft.MixedReality.WebRTC
             State = ChannelState.Connecting; // see PeerConnection.AddDataChannelImpl()
         }
 
+        /// <summary>
+        /// Finalizer to ensure the data track is removed from the peer connection
+        /// and the managed resources are cleaned-up.
+        /// </summary>
         ~DataChannel()
         {
-            State = ChannelState.Closing;
-            PeerConnection.RemoveDataChannel(this);
-            State = ChannelState.Closed;
+            Dispose();
         }
 
         /// <summary>
-        /// Remove the data channel from the peer connection and destroy it.
+        /// Remove the data track from the peer connection and destroy it.
         /// </summary>
         public void Dispose()
         {
             State = ChannelState.Closing;
             PeerConnection.RemoveDataChannel(this);
             State = ChannelState.Closed;
+            _handle.Free();
             GC.SuppressFinalize(this);
         }
 

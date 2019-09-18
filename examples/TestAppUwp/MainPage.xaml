@@ -6,6 +6,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:winmc="using:Windows.Media.Capture"
+    xmlns:webrtc="using:Microsoft.MixedReality.WebRTC"
     mc:Ignorable="d"
     Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
     <Page.Resources>
@@ -15,7 +16,7 @@
                 <TextBlock Text="{x:Bind Label}" Margin="24,0,0,0" VerticalAlignment="Center" />
             </StackPanel>
         </DataTemplate>
-        <DataTemplate x:Key="VideoCaptureDeviceTemplate" x:DataType="local:VideoCaptureDevice">
+        <DataTemplate x:Key="VideoCaptureDeviceTemplate" x:DataType="local:VideoCaptureDeviceInfo">
             <StackPanel Orientation="Horizontal">
                 <SymbolIcon Symbol="{x:Bind Symbol}" Margin="0,0,12,0" />
                 <StackPanel Orientation="Vertical" AutomationProperties.Name="{x:Bind DisplayName}">
@@ -38,6 +39,21 @@
                     <Run Text="{x:Bind FrameRate}" />
                     <Run> FPS (</Run>
                     <Run Text="{x:Bind Subtype}" />
+                    <Run>)</Run>
+                </TextBlock>
+            </StackPanel>
+        </DataTemplate>
+        <DataTemplate x:Key="VideoCaptureFormatTemplate" x:DataType="webrtc:VideoCaptureFormat">
+            <StackPanel Orientation="Horizontal">
+                <SymbolIcon Symbol="Video" Margin="0,0,12,0" />
+                <TextBlock VerticalAlignment="Center" >
+                    <Run Text="{x:Bind width}" />
+                    <Run> x </Run>
+                    <Run Text="{x:Bind height}" />
+                    <Run> @ </Run>
+                    <Run Text="{x:Bind framerate}" />
+                    <Run> FPS (</Run>
+                    <Run Text="{x:Bind fourcc}" />
                     <Run>)</Run>
                 </TextBlock>
             </StackPanel>
@@ -84,50 +100,52 @@
                 </Grid>
             </PivotItem>
             <PivotItem Header="Connection">
+                <StackPanel Orientation="Vertical">
+                    <TextBlock Text="STUN server" FontWeight="Bold" />
+                    <TextBlock Text="The STUN server is used to establish a peer connection through NATs." FontStyle="Italic" Grid.Row="1" Margin="12,6,0,0" />
+                    <TextBox Name="stunServer" Width="400" HorizontalAlignment="Left" PlaceholderText="address:port (without prefix)" Text="stun.l.google.com:19302" Grid.Row="2" Margin="12,6,0,6"/>
+                    <!--<TextBlock Text="Discovered peers" FontWeight="Bold" Grid.ColumnSpan="2" Grid.Row="3" Margin="0,12,0,0" FontFamily="Segoe UI" />
+                    <ListView Grid.Row="4" Margin="12,0,0,0" ItemsSource="{x:Bind NavLinks}" ItemTemplate="{StaticResource NavLinkItemTemplate}" />-->
+                    <TextBlock Text="SDP semantic" FontWeight="Bold" />
+                    <TextBlock FontStyle="Italic" Margin="12,6,0,0">
+                        Specifies the <Hyperlink NavigateUri="https://webrtc.org/web-apis/chrome/unified-plan/">SDP dialect</Hyperlink> used to negotiate a peer connection.<LineBreak/>Do not use Plan B unless there is an issue with the Unified Plan.
+                    </TextBlock>
+                    <StackPanel Orientation="Horizontal" Margin="12,0,0,0">
+                        <RadioButton x:Name="sdpSemanticUnifiedPlan" Content="Unified Plan" IsChecked="True" GroupName="SdpSemanticGroup" Margin="0,0,20,0" />
+                        <RadioButton x:Name="sdpSemanticPlanB" Content="Plan B (deprecated)" GroupName="SdpSemanticGroup" />
+                    </StackPanel>
+                    <Button Name="createOfferButton" IsEnabled="False" Content="Create offer" HorizontalAlignment="Left" VerticalAlignment="Top" RenderTransformOrigin="0.511,0.634" Click="CreateOfferButtonClicked" Width="125" Margin="0,12,0,0"/>
+                </StackPanel>
+            </PivotItem>
+            <PivotItem Header="Webcam">
                 <Grid>
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="12px"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="20px"/>
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Text="STUN server" FontWeight="Bold" Grid.ColumnSpan="2" />
-                    <TextBlock Text="The STUN server is used to establish a peer connection through NATs." FontStyle="Italic" Grid.ColumnSpan="2" Grid.Row="1" Margin="12,6,0,0" />
-                    <TextBox Name="stunServer" HorizontalAlignment="Left" PlaceholderText="address:port (without prefix)" Text="stun.l.google.com:19302" VerticalAlignment="Center" Width="300" Grid.Row="2" Margin="12,6,0,6"/>
-                    <!--<TextBlock Text="Discovered peers" FontWeight="Bold" Grid.ColumnSpan="2" Grid.Row="3" Margin="0,12,0,0" FontFamily="Segoe UI" />
-                    <ListView Grid.Row="4" Margin="12,0,0,0" ItemsSource="{x:Bind NavLinks}" ItemTemplate="{StaticResource NavLinkItemTemplate}" />-->
-                    <Button Name="createOfferButton" IsEnabled="False" Content="Create offer" HorizontalAlignment="Left" VerticalAlignment="Center" RenderTransformOrigin="0.511,0.634" Click="CreateOfferButtonClicked" Width="125" Grid.Row="5" Grid.Column="1" Margin="0,6,0,6"/>
-                    <TextBlock Text="Video capture devices" FontWeight="Bold" Grid.Row="3" Margin="0,12,0,0" FontFamily="Segoe UI" Grid.Column="0" />
-                    <Grid Grid.Row="4" Grid.Column="0" HorizontalAlignment="Stretch" Margin="0,0,0,0" VerticalAlignment="Stretch">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <ListView x:Name="VideoCaptureDeviceList" Grid.Row="0" ItemsSource="{x:Bind VideoCaptureDevices}" ItemTemplate="{StaticResource VideoCaptureDeviceTemplate}" MinHeight="120" MinWidth="120" />
-                        <TextBlock Grid.Row="1" Text="Preferred Video codec" FontWeight="Bold" Margin="0,12,0,0" FontFamily="Segoe UI" />
-                        <TextBox x:Name="PreferredVideoCodec" Grid.Row="2" Text="H264" />
-                        <TextBlock Grid.Row="3" Text="Video profile" FontWeight="Bold" Margin="0,12,0,0" FontFamily="Segoe UI" />
-                        <ComboBox x:Name="KnownVideoProfileKindComboBox" Margin="0,10,0,0" Grid.Row="4" MaxWidth="400" MinWidth="200"/>
-                        <ComboBox x:Name="VideoProfileComboBox" ItemsSource="{x:Bind VideoProfiles}" ItemTemplate="{StaticResource VideoProfileTemplate}" Margin="0,10,0,0" Grid.Row="5" MaxWidth="400" MinWidth="200"/>
-                        <ListView x:Name="RecordMediaDescList" Grid.Row="6" ItemsSource="{x:Bind RecordMediaDescs}" ItemTemplate="{StaticResource RecordMediaDescTemplate}" MinHeight="120" MinWidth="120" />
-                    </Grid>
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock Text="Video capture device" FontWeight="Bold" Margin="0,12,0,0" FontFamily="Segoe UI" />
+                        <ListView x:Name="VideoCaptureDeviceList" ItemsSource="{x:Bind VideoCaptureDevices}" ItemTemplate="{StaticResource VideoCaptureDeviceTemplate}" MinHeight="120" MinWidth="120" />
+                        <TextBlock Text="Preferred video codec" FontWeight="Bold" Margin="0,12,0,0" FontFamily="Segoe UI" />
+                        <TextBlock FontStyle="Italic" Margin="0,6,0,0">
+                            Leave blank to use the default video codec. A partial list is <Hyperlink NavigateUri="https://en.wikipedia.org/wiki/RTP_payload_formats">available from Wikipedia</Hyperlink>.<LineBreak />Common values include "H264", "H265", "VP8", "VP9". Names are case sensitive.
+                        </TextBlock>
+                        <TextBox x:Name="PreferredVideoCodec" Text="H264" Margin="0,6,0,6" Width="400" HorizontalAlignment="Left" />
+                    </StackPanel>
+                    <StackPanel Orientation="Vertical" Grid.Column="2">
+                        <TextBlock Text="Video profile" FontWeight="Bold" Margin="0,12,0,0" FontFamily="Segoe UI" />
+                        <ComboBox x:Name="KnownVideoProfileKindComboBox" Margin="0,10,0,0" MaxWidth="400" MinWidth="200" />
+                        <ComboBox x:Name="VideoProfileComboBox" ItemsSource="{x:Bind VideoProfiles}" ItemTemplate="{StaticResource VideoProfileTemplate}" Margin="0,10,0,10" MaxWidth="400" MinWidth="200"/>
+                        <ListView x:Name="RecordMediaDescList" ItemsSource="{x:Bind RecordMediaDescs}" ItemTemplate="{StaticResource RecordMediaDescTemplate}" MinHeight="120" MinWidth="120" />
+                        <ListView x:Name="VideoCaptureFormatList" ItemsSource="{x:Bind VideoCaptureFormats}" ItemTemplate="{StaticResource VideoCaptureFormatTemplate}" MinHeight="120" MinWidth="120" />
+                    </StackPanel>
                 </Grid>
             </PivotItem>
-            <PivotItem Header="Channels">
+            <PivotItem Header="Tracks">
                 <Grid HorizontalAlignment="Stretch" Margin="0,0,0,0" VerticalAlignment="Stretch">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="20"/>
@@ -195,7 +213,9 @@
                         <TextBlock x:Name="remoteLateText" Text="Late :" Grid.Column="3" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
                     </Grid>
                     <StackPanel Orientation="Horizontal" Grid.Row="3" Grid.Column="2">
-                        <TextBlock Text="Remote Audio Channels : " VerticalAlignment="Top" />
+                        <TextBlock Text="ICE state : " VerticalAlignment="Top" />
+                        <TextBlock x:Name="iceStateText" Text="-" VerticalAlignment="Top" Margin="6,0,0,0" />
+                        <TextBlock Text="Remote Audio Channels : " VerticalAlignment="Top" Margin="20,0,0,0" />
                         <TextBlock x:Name="remoteAudioChannelCount" Text="-" VerticalAlignment="Top" Margin="6,0,0,0" />
                         <TextBlock Text="Sample rate : " VerticalAlignment="Top" Margin="20,0,0,0" />
                         <TextBlock x:Name="remoteAudioSampleRate" Text="-" VerticalAlignment="Top" Margin="6,0,0,0" />
