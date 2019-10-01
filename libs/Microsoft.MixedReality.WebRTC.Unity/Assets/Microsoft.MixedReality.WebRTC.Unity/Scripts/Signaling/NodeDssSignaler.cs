@@ -68,7 +68,7 @@ namespace Microsoft.MixedReality.WebRTC.Unity
         #region ISignaler interface
 
         /// <inheritdoc/>
-        public override Task SendMessageAsync(SignalerMessage message)
+        public override Task SendMessageAsync(Message message)
         {
             // This method needs to return a Task object which gets completed once the signaler message
             // has been sent. Because the implementation uses a Unity coroutine, use a reset event to
@@ -115,9 +115,9 @@ namespace Microsoft.MixedReality.WebRTC.Unity
         /// <param name="sdpMid"></param>
         protected override void OnIceCandiateReadyToSend(string candidate, int sdpMlineIndex, string sdpMid)
         {
-            StartCoroutine(PostToServer(new SignalerMessage()
+            StartCoroutine(PostToServer(new Message()
             {
-                MessageType = SignalerMessage.WireMessageType.Ice,
+                MessageType = Message.WireMessageType.Ice,
                 Data = $"{candidate}|{sdpMlineIndex}|{sdpMid}",
                 IceDataSeparator = "|"
             }));
@@ -131,9 +131,9 @@ namespace Microsoft.MixedReality.WebRTC.Unity
         /// <param name="sdp"></param>
         protected override void OnSdpOfferReadyToSend(string offer)
         {
-            StartCoroutine(PostToServer(new SignalerMessage()
+            StartCoroutine(PostToServer(new Message()
             {
-                MessageType = SignalerMessage.WireMessageType.Offer,
+                MessageType = Message.WireMessageType.Offer,
                 Data = offer
             }));
         }
@@ -146,9 +146,9 @@ namespace Microsoft.MixedReality.WebRTC.Unity
         /// <param name="sdp"></param>
         protected override void OnSdpAnswerReadyToSend(string answer)
         {
-            StartCoroutine(PostToServer(new SignalerMessage()
+            StartCoroutine(PostToServer(new Message()
             {
-                MessageType = SignalerMessage.WireMessageType.Answer,
+                MessageType = Message.WireMessageType.Answer,
                 Data = answer,
             }));
         }
@@ -157,8 +157,13 @@ namespace Microsoft.MixedReality.WebRTC.Unity
         /// Internal helper for sending HTTP data to the node-dss server using POST
         /// </summary>
         /// <param name="msg">the message to send</param>
-        private IEnumerator PostToServer(SignalerMessage msg)
+        private IEnumerator PostToServer(Message msg)
         {
+            if (RemotePeerId.Length == 0)
+            {
+                throw new InvalidOperationException("Cannot send message to remote peer; invalid empty remote peer ID.");
+            }
+
             var data = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(msg));
             var www = new UnityWebRequest($"{HttpServerAddress}data/{RemotePeerId}", UnityWebRequest.kHttpVerbPOST);
             www.uploadHandler = new UploadHandlerRaw(data);
@@ -167,7 +172,7 @@ namespace Microsoft.MixedReality.WebRTC.Unity
 
             if (AutoLogErrors && (www.isNetworkError || www.isHttpError))
             {
-                Debug.Log("Failure sending message: " + www.error);
+                Debug.Log($"Failed to send message to remote peer {RemotePeerId}: {www.error}");
             }
         }
 
@@ -176,7 +181,7 @@ namespace Microsoft.MixedReality.WebRTC.Unity
         /// for use inside a <see cref="Task"/> object.
         /// </summary>
         /// <param name="msg">the message to send</param>
-        private IEnumerator PostToServerAndWait(SignalerMessage message, ManualResetEvent mre)
+        private IEnumerator PostToServerAndWait(Message message, ManualResetEvent mre)
         {
             // Start the coroutine and wait for it to finish
             yield return StartCoroutine(PostToServer(message));
@@ -197,7 +202,7 @@ namespace Microsoft.MixedReality.WebRTC.Unity
             {
                 var json = www.downloadHandler.text;
 
-                var msg = JsonUtility.FromJson<SignalerMessage>(json);
+                var msg = JsonUtility.FromJson<Message>(json);
 
                 // if the message is good
                 if (msg != null)
@@ -207,15 +212,15 @@ namespace Microsoft.MixedReality.WebRTC.Unity
                     Debug.Log($"Received SDP message: type={msg.MessageType} data={msg.Data}");
                     switch (msg.MessageType)
                     {
-                        case SignalerMessage.WireMessageType.Offer:
+                        case Message.WireMessageType.Offer:
                             _nativePeer.SetRemoteDescription("offer", msg.Data);
                             // if we get an offer, we immediately send an answer
                             _nativePeer.CreateAnswer();
                             break;
-                        case SignalerMessage.WireMessageType.Answer:
+                        case Message.WireMessageType.Answer:
                             _nativePeer.SetRemoteDescription("answer", msg.Data);
                             break;
-                        case SignalerMessage.WireMessageType.Ice:
+                        case Message.WireMessageType.Ice:
                             // this "parts" protocol is defined above, in OnIceCandiateReadyToSend listener
                             var parts = msg.Data.Split(new string[] { msg.IceDataSeparator }, StringSplitOptions.RemoveEmptyEntries);
                             // Note the inverted arguments; candidate is last here, but first in OnIceCandiateReadyToSend

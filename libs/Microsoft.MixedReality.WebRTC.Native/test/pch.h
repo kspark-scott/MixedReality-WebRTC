@@ -4,8 +4,14 @@
 
 #pragma once
 
-#include <cassert>
 #include <SDKDDKVer.h>
+#include <cassert>
+
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+
+using namespace std::chrono_literals;
 
 #if defined(MR_SHARING_WIN)
 
@@ -31,5 +37,11 @@
 #define GTEST_LANG_CXX11 1
 
 #include "gtest/gtest.h"
+
+#pragma warning(push)
+#pragma warning(disable : 4100 4127)
+#include "api/datachannelinterface.h"
+#include "rtc_base/thread_annotations.h"
+#pragma warning(pop)
 
 #include "peer_connection_test_helpers.h"

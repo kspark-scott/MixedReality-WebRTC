@@ -3,6 +3,7 @@
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Microsoft.MixedReality.WebRTC.Interop;
 
 namespace Microsoft.MixedReality.WebRTC
 {
@@ -42,7 +43,7 @@ namespace Microsoft.MixedReality.WebRTC
         /// This can be assigned to resize the storage.
         /// </summary>
         /// <remarks>
-        /// Reading this property is equivalent to reading the <see cref="System.Array.LongLength"/>
+        /// Reading this property is equivalent to reading the <see xref="System.Array.LongLength"/>
         /// property of <see cref="Buffer"/>.
         /// </remarks>
         public ulong Capacity {
@@ -284,7 +285,7 @@ namespace Microsoft.MixedReality.WebRTC
                 fixed (void* dst = storage.Buffer)
                 {
                     void* src = (void*)frame.data;
-                    PeerConnection.MemCpyStride(dst, frame.stride, (void*)frame.data, frame.stride, (int)frame.width * 4, (int)frame.height);
+                    Utils.MemCpyStride(dst, frame.stride, (void*)frame.data, frame.stride, (int)frame.width * 4, (int)frame.height);
                 }
             }
             storage.Width = frame.width;

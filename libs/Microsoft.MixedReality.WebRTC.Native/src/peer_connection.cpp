@@ -8,6 +8,7 @@
 
 #include "api.h"
 #include "audio_frame_observer.h"
+#include "data_channel.h"
 #include "peer_connection.h"
 #include "video_frame_observer.h"
 
@@ -80,10 +81,11 @@ namespace Microsoft::MixedReality::WebRTC {
 
 rtc::scoped_refptr<PeerConnection> PeerConnection::create(
     webrtc::PeerConnectionFactoryInterface& factory,
-    const webrtc::PeerConnectionInterface::RTCConfiguration& config) {
+    const webrtc::PeerConnectionInterface::RTCConfiguration& config,
+    mrsPeerConnectionInteropHandle interop_handle) {
   // Create the PeerConnection object
   rtc::scoped_refptr<PeerConnection> peer =
-      new rtc::RefCountedObject<PeerConnection>();
+      new rtc::RefCountedObject<PeerConnection>(interop_handle);
 
   // Create the underlying implementation
   webrtc::PeerConnectionDependencies dependencies(peer);
@@ -102,9 +104,13 @@ rtc::scoped_refptr<PeerConnection> PeerConnection::create(
   return peer;
 }
 
-PeerConnection::PeerConnection() = default;
+PeerConnection::PeerConnection(mrsPeerConnectionInteropHandle interop_handle)
+    : interop_handle_(interop_handle) {}
 
 PeerConnection::~PeerConnection() noexcept {
+  // Close the connection
+  peer_->Close();
+
   // Ensure that observers (sinks) are removed, otherwise the media pipelines
   // will continue to try to feed them with data after they're destroyed
   RemoveLocalVideoTrack();
@@ -120,6 +126,11 @@ PeerConnection::~PeerConnection() noexcept {
         audio_track->RemoveSink(sink);
       }
     }
+  }
+
+  // Beware, RemoveDataChannel() erases from data_channels_
+  while (!data_channels_.empty()) {
+    RemoveDataChannel(*data_channels_.back());
   }
 }
 
@@ -153,6 +164,32 @@ void PeerConnection::RemoveLocalVideoTrack() noexcept {
   local_video_sender_ = nullptr;
 }
 
+void PeerConnection::SetLocalVideoTrackEnabled(bool enabled) noexcept {
+  if (local_video_track_) {
+    local_video_track_->set_enabled(enabled);
+  }
+}
+
+bool PeerConnection::IsLocalVideoTrackEnabled() const noexcept {
+  if (local_video_track_) {
+    return local_video_track_->enabled();
+  }
+  return false;
+}
+
+void PeerConnection::SetLocalAudioTrackEnabled(bool enabled) noexcept {
+  if (local_audio_track_) {
+    local_audio_track_->set_enabled(enabled);
+  }
+}
+
+bool PeerConnection::IsLocalAudioTrackEnabled() const noexcept {
+  if (local_audio_track_) {
+    return local_audio_track_->enabled();
+  }
+  return false;
+}
+
 bool PeerConnection::AddLocalAudioTrack(
     rtc::scoped_refptr<webrtc::AudioTrackInterface> audio_track) noexcept {
   if (local_audio_track_) {
@@ -183,14 +220,18 @@ void PeerConnection::RemoveLocalAudioTrack() noexcept {
   local_audio_sender_ = nullptr;
 }
 
-mrsResult PeerConnection::AddDataChannel(
+webrtc::RTCErrorOr<std::shared_ptr<DataChannel>> PeerConnection::AddDataChannel(
     int id,
-    const char* label,
+    std::string_view label,
     bool ordered,
     bool reliable,
-    DataChannelMessageCallback message_callback,
-    DataChannelBufferingCallback buffering_callback,
-    DataChannelStateCallback state_callback) noexcept {
+    mrsDataChannelInteropHandle dataChannelInteropHandle) noexcept {
+  if (!sctp_negotiated_) {
+    // Don't try to create a data channel without SCTP negotiation, it will get
+    // stuck in the kConnecting state forever.
+    return webrtc::RTCError(webrtc::RTCErrorType::INVALID_STATE,
+                            "SCTP not negotiated");
+  }
   webrtc::DataChannelInit config{};
   config.ordered = ordered;
   config.reliable = reliable;
@@ -202,95 +243,99 @@ mrsResult PeerConnection::AddDataChannel(
     config.id = id;
   } else {
     // Valid IDs are 0-65535 (16 bits)
-    return MRS_E_INVALID_DATA_CHANNEL_ID;
+    return webrtc::RTCError(webrtc::RTCErrorType::INVALID_RANGE);
   }
-  if (!sctp_negotiated_) {
-    // Don't try to create a data channel without SCTP negotiation, it will get
-    // stuck in the kConnecting state forever.
-    return MRS_E_SCTP_NOT_NEGOTIATED;
-  }
-  std::string labelString;
-  if (label)
-    labelString = label;
-  rtc::scoped_refptr<webrtc::DataChannelInterface> dataChannel =
-      peer_->CreateDataChannel(labelString, &config);
-  if (dataChannel) {
-    std::shared_ptr<DataChannelObserver> observer{
-        new DataChannelObserver(dataChannel)};
-    observer->SetMessageCallback(message_callback);
-    observer->SetBufferingCallback(buffering_callback);
-    observer->SetStateCallback(state_callback);
-    dataChannel->RegisterObserver(observer.get());
+  std::string labelString{label};
+  if (rtc::scoped_refptr<webrtc::DataChannelInterface> impl =
+          peer_->CreateDataChannel(labelString, &config)) {
+    // Create the native object
+    auto data_channel = std::make_shared<DataChannel>(this, std::move(impl),
+                                                      dataChannelInteropHandle);
+    data_channels_.push_back(data_channel);
     if (!labelString.empty()) {
-      data_channel_from_label_.emplace(
-          std::make_pair(std::move(labelString), observer));
+      data_channel_from_label_.emplace(std::move(labelString), data_channel);
     }
     if (config.id >= 0) {
-      data_channel_from_id_.try_emplace(config.id, std::move(observer));
+      data_channel_from_id_.try_emplace(config.id, data_channel);
     }
-    return MRS_SUCCESS;
+
+    // For in-band channels, the creating side (here) doesn't receive an
+    // OnDataChannel() message, so invoke the DataChannelAdded event right now.
+    if (!data_channel->impl()->negotiated()) {
+      OnDataChannelAdded(*data_channel.get());
+    }
+
+    return data_channel;
   }
-  return MRS_E_UNKNOWN;
+  return webrtc::RTCError(webrtc::RTCErrorType::INTERNAL_ERROR);
 }
 
-bool PeerConnection::RemoveDataChannel(int id) noexcept {
-  if (id < 0)
-    return false;
-  auto it_id = data_channel_from_id_.find(id);
-  if (it_id == data_channel_from_id_.end())
-    return false;
-  std::shared_ptr<DataChannelObserver> const& observer = it_id->second;
-  if (auto* data_channel = observer->data_channel()) {
-    auto it_label = data_channel_from_label_.find(data_channel->label());
-    if (it_label != data_channel_from_label_.end()) {
-      data_channel_from_label_.erase(it_label);
-    }
-    data_channel->UnregisterObserver();
-    data_channel->Close();
-  }
-  data_channel_from_id_.erase(it_id);
-  return true;
-}
+void PeerConnection::RemoveDataChannel(
+    const DataChannel& data_channel) noexcept {
+  // The channel must be owned by this PeerConnection, so must be known already
+  auto const it =
+      std::find_if(data_channels_.begin(), data_channels_.end(),
+                   [&data_channel](const std::shared_ptr<DataChannel>& other) {
+                     return other.get() == &data_channel;
+                   });
+  RTC_CHECK(it != data_channels_.end());
 
-bool PeerConnection::RemoveDataChannel(const char* label) noexcept {
-  if (!label)
-    return false;
-  std::string labelString(label);
-  if (labelString.empty())
-    return false;
-  auto it_label = data_channel_from_label_.find(labelString);
-  if (it_label == data_channel_from_label_.end())
-    return false;
-  std::shared_ptr<DataChannelObserver> const& observer = it_label->second;
-  if (auto* data_channel = observer->data_channel()) {
-    auto it_id = data_channel_from_id_.find(data_channel->id());
+  // Clean-up interop maps
+  {
+    auto it_id = data_channel_from_id_.find(data_channel.id());
     if (it_id != data_channel_from_id_.end()) {
       data_channel_from_id_.erase(it_id);
     }
-    data_channel->UnregisterObserver();
-    data_channel->Close();
+    const str label = data_channel.label();
+    if (!label.empty()) {
+      auto it_label = data_channel_from_label_.find(label);
+      if (it_label != data_channel_from_label_.end()) {
+        data_channel_from_label_.erase(it_label);
+      }
+    }
   }
-  data_channel_from_label_.erase(it_label);
-  return true;
+
+  // Close the data channel
+  webrtc::DataChannelInterface* const impl = data_channel.impl();
+  impl->UnregisterObserver();  // force here, as ~DataChannel() didn't run yet
+  impl->Close();
+
+  // Invoke the DataChannelRemoved callback on the wrapper if any
+  if (auto interop_handle = data_channel.GetInteropHandle()) {
+    auto lock = std::lock_guard{data_channel_removed_callback_mutex_};
+    auto removed_cb = data_channel_removed_callback_;
+    if (removed_cb) {
+      DataChannelHandle data_native_handle = (void*)&data_channel;
+      removed_cb(interop_handle, data_native_handle);
+    }
+  }
+
+  // Remove the channel last, to be sure a reference is kept.
+  // This should not be a problem in theory because the caller should have a
+  // reference to it, but this is safer.
+  (*it)->OnRemovedFromPeerConnection();  // clear back pointer
+  data_channels_.erase(it);
 }
 
-bool PeerConnection::SendDataChannelMessage(int id,
-                                            const void* data,
-                                            uint64_t size) noexcept {
-  if (id < 0)
-    return false;
-  auto it_id = data_channel_from_id_.find(id);
-  if (it_id == data_channel_from_id_.end())
-    return false;
-  if (auto* data_channel = it_id->second->data_channel()) {
-    if (data_channel->buffered_amount() + size > 0x1000000uLL) {
-      return false;
+void PeerConnection::OnDataChannelAdded(
+    const DataChannel& data_channel) noexcept {
+  // The channel must be owned by this PeerConnection, so must be known already.
+  // It was added in AddDataChannel() when the DataChannel object was created.
+  RTC_CHECK(
+      std::find_if(data_channels_.begin(), data_channels_.end(),
+                   [&data_channel](const std::shared_ptr<DataChannel>& other) {
+                     return other.get() == &data_channel;
+                   }) != data_channels_.end());
+
+  // Invoke the DataChannelAdded callback on the wrapper if any
+  if (auto interop_handle = data_channel.GetInteropHandle()) {
+    auto lock = std::lock_guard{data_channel_added_callback_mutex_};
+    auto added_cb = data_channel_added_callback_;
+    if (added_cb) {
+      DataChannelHandle data_native_handle = (void*)&data_channel;
+      added_cb(interop_handle, data_native_handle);
     }
-    rtc::CopyOnWriteBuffer bufferStorage((const char*)data, (size_t)size);
-    webrtc::DataBuffer buffer(bufferStorage, true);  // always binary
-    return data_channel->Send(buffer);
   }
-  return false;
 }
 
 bool PeerConnection::AddIceCandidate(const char* sdp_mid,
@@ -317,7 +362,7 @@ bool PeerConnection::CreateOffer() noexcept {
     options.offer_to_receive_audio = true;
     options.offer_to_receive_video = true;
   }
-  if (data_channel_from_id_.empty()) {
+  if (data_channels_.empty()) {
     sctp_negotiated_ = false;
   }
   peer_->CreateOffer(this, options);
@@ -341,7 +386,7 @@ bool PeerConnection::SetRemoteDescription(const char* type,
                                           const char* sdp) noexcept {
   if (!peer_)
     return false;
-  if (data_channel_from_id_.empty()) {
+  if (data_channels_.empty()) {
     sctp_negotiated_ = false;
   }
   std::string sdp_type_str(type);
@@ -407,34 +452,70 @@ void PeerConnection::OnRemoveStream(
 }
 
 void PeerConnection::OnDataChannel(
-    rtc::scoped_refptr<webrtc::DataChannelInterface> data_channel)
-#if defined(WINUWP)
-    noexcept(false)
-#else
-    noexcept
-#endif
-{
+    rtc::scoped_refptr<webrtc::DataChannelInterface> impl) noexcept {
   // If receiving a new data channel, then obviously SCTP has been negotiated so
   // it is safe to create other ones.
   sctp_negotiated_ = true;
 
-  std::string label = data_channel->label();
-  std::shared_ptr<DataChannelObserver> observer{
-      new DataChannelObserver(data_channel)};
-  //< TODO - Need to register a message callback!!
-  // observer->setMessageCallback(message_callback);
-  // observer->setBufferingCallback(buffering_callback);
-  // observer->setStateCallback(state_callback);
-  data_channel->RegisterObserver(observer.get());
-  if (!label.empty())
-    data_channel_from_label_.emplace(std::move(label), observer);
-  if (data_channel->id() >= 0)
-    data_channel_from_id_.try_emplace(data_channel->id(), std::move(observer));
-#if defined(WINUWP)
-  else
-    winrt::throw_hresult(E_UNEXPECTED);  //< TODO - check & remove
-#endif
-}  // namespace webrtc_impl
+  // Read the data channel config
+  std::string label = impl->label();
+  mrsDataChannelConfig config;
+  config.id = impl->id();
+  config.label = label.c_str();
+  if (impl->ordered()) {
+    config.flags = (mrsDataChannelConfigFlags)(
+        (uint32_t)config.flags | (uint32_t)mrsDataChannelConfigFlags::kOrdered);
+  }
+  if (impl->reliable()) {
+    config.flags = (mrsDataChannelConfigFlags)(
+        (uint32_t)config.flags |
+        (uint32_t)mrsDataChannelConfigFlags::kReliable);
+  }
+
+  // Create an interop wrapper for the new native object if needed
+  mrsDataChannelInteropHandle data_channel_interop_handle{};
+  mrsDataChannelCallbacks callbacks{};
+  if (auto create_cb = interop_callbacks_.data_channel_create_object) {
+    data_channel_interop_handle =
+        (*create_cb)(interop_handle_, config, &callbacks);
+  }
+
+  // Create a new native object
+  auto data_channel =
+      std::make_shared<DataChannel>(this, impl, data_channel_interop_handle);
+  data_channels_.push_back(data_channel);
+  if (!label.empty()) {
+    // Move |label| into the map to avoid copy
+    auto it = data_channel_from_label_.emplace(std::move(label), data_channel);
+    // Update the address to the moved item in case it changed
+    config.label = it->first.c_str();
+  }
+  if (data_channel->id() >= 0) {
+    data_channel_from_id_.try_emplace(data_channel->id(), data_channel);
+  }
+
+  // TODO -- Invoke some callback on the C++ side
+
+  if (data_channel_interop_handle) {
+    // Register the interop callbacks
+    data_channel->SetMessageCallback(DataChannel::MessageCallback{
+        callbacks.message_callback, callbacks.message_user_data});
+    data_channel->SetBufferingCallback(DataChannel::BufferingCallback{
+        callbacks.buffering_callback, callbacks.buffering_user_data});
+    data_channel->SetStateCallback(DataChannel::StateCallback{
+        callbacks.state_callback, callbacks.state_user_data});
+
+    // Invoke the DataChannelAdded callback on the wrapper
+    {
+      auto lock = std::lock_guard{data_channel_added_callback_mutex_};
+      auto added_cb = data_channel_added_callback_;
+      if (added_cb) {
+        const DataChannelHandle data_native_handle = data_channel.get();
+        added_cb(data_channel_interop_handle, data_native_handle);
+      }
+    }
+  }
+}
 
 void PeerConnection::OnRenegotiationNeeded() noexcept {
   auto lock = std::lock_guard{renegotiation_needed_callback_mutex_};

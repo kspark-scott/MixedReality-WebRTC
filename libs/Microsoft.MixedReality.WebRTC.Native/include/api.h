@@ -11,16 +11,7 @@
 rtc::Thread* UnsafeGetWorkerThread();
 #endif
 
-// P/Invoke uses stdcall by default. This can be changed, but Unity's IL2CPP
-// does not understand the CallingConvention attribute and instead
-// unconditionally forces stdcall. So use stdcall in the API to be compatible.
-#if defined(MR_SHARING_WIN)
-#define MRS_API __declspec(dllexport)
-#define MRS_CALL __stdcall
-#elif defined(MR_SHARING_ANDROID)
-#define MRS_API __attribute__((visibility("default")))
-#define MRS_CALL __attribute__((stdcall))
-#endif
+#include "export.h"
 
 extern "C" {
 
@@ -59,6 +50,26 @@ using mrsEnumHandle = mrsEnumerator*;
 
 /// Close an enumerator previously obtained from one of the EnumXxx() calls.
 MRS_API void MRS_CALL mrsCloseEnum(mrsEnumHandle* handleRef) noexcept;
+
+//
+// Interop
+//
+
+struct mrsDataChannelConfig;
+struct mrsDataChannelCallbacks;
+
+/// Opaque handle to the interop wrapper of a peer connection.
+using mrsPeerConnectionInteropHandle = void*;
+
+/// Opaque handle to the interop wrapper of a data channel.
+using mrsDataChannelInteropHandle = void*;
+
+/// Callback to create an interop wrapper for a data channel.
+using mrsPeerConnectionDataChannelCreateObjectCallback =
+    mrsDataChannelInteropHandle(MRS_CALL*)(
+        mrsPeerConnectionInteropHandle parent,
+        mrsDataChannelConfig config,
+        mrsDataChannelCallbacks* callbacks);
 
 //
 // Video capture enumeration
@@ -109,8 +120,11 @@ MRS_API mrsResult MRS_CALL mrsEnumVideoCaptureFormatsAsync(
 // Peer connection
 //
 
-/// Opaque handle to a PeerConnection object.
+/// Opaque handle to a native PeerConnection C++ object.
 using PeerConnectionHandle = void*;
+
+/// Opaque handle to a native DataChannel C++ object.
+using DataChannelHandle = void*;
 
 /// Callback fired when the peer connection is connected, that is it finished
 /// the JSEP offer/answer exchange successfully.
@@ -168,6 +182,19 @@ using PeerConnectionTrackAddedCallback = void(MRS_CALL*)(void* user_data,
 using PeerConnectionTrackRemovedCallback =
     void(MRS_CALL*)(void* user_data, TrackKind track_kind);
 
+/// Callback fired when a data channel is added to the peer connection after
+/// being negotiated with the remote peer.
+using PeerConnectionDataChannelAddedCallback =
+    void(MRS_CALL*)(void* user_data,
+                    mrsDataChannelInteropHandle data_channel_wrapper,
+                    DataChannelHandle data_channel);
+
+/// Callback fired when a data channel is remoted from the peer connection.
+using PeerConnectionDataChannelRemovedCallback =
+    void(MRS_CALL*)(void* user_data,
+                    mrsDataChannelInteropHandle data_channel_wrapper,
+                    DataChannelHandle data_channel);
+
 /// Callback fired when a local or remote (depending on use) video frame is
 /// available to be consumed by the caller, usually for display.
 /// The video frame is encoded in I420 triplanar format (NV12).
@@ -205,24 +232,24 @@ using PeerConnectionAudioFrameCallback =
                     const uint32_t number_of_frames);
 
 /// Callback fired when a message is received on a data channel.
-using PeerConnectionDataChannelMessageCallback =
-    void(MRS_CALL*)(void* user_data, const void* data, const uint64_t size);
+using mrsDataChannelMessageCallback = void(MRS_CALL*)(void* user_data,
+                                                      const void* data,
+                                                      const uint64_t size);
 
 /// Callback fired when a data channel buffering changes.
 /// The |previous| and |current| values are the old and new sizes in byte of the
 /// buffering buffer. The |limit| is the capacity of the buffer.
 /// Note that when the buffer is full, any attempt to send data will result is
 /// an abrupt closing of the data channel. So monitoring this state is critical.
-using PeerConnectionDataChannelBufferingCallback =
-    void(MRS_CALL*)(void* user_data,
-                    const uint64_t previous,
-                    const uint64_t current,
-                    const uint64_t limit);
+using mrsDataChannelBufferingCallback = void(MRS_CALL*)(void* user_data,
+                                                        const uint64_t previous,
+                                                        const uint64_t current,
+                                                        const uint64_t limit);
 
 /// Callback fired when the state of a data channel changed.
-using PeerConnectionDataChannelStateCallback = void(MRS_CALL*)(void* user_data,
-                                                               int state,
-                                                               int id);
+using mrsDataChannelStateCallback = void(MRS_CALL*)(void* user_data,
+                                                    int32_t state,
+                                                    int32_t id);
 
 /// ICE transport type. See webrtc::PeerConnectionInterface::IceTransportsType.
 /// Currently values are aligned, but kept as a separate structure to allow
@@ -274,7 +301,17 @@ struct PeerConnectionConfiguration {
 /// On UWP this must be invoked from another thread than the main UI thread.
 MRS_API mrsResult MRS_CALL
 mrsPeerConnectionCreate(PeerConnectionConfiguration config,
+                        mrsPeerConnectionInteropHandle interop_handle,
                         PeerConnectionHandle* peerHandleOut) noexcept;
+
+struct mrsPeerConnectionInteropCallbacks {
+  /// Construct an interop object for a DataChannel instance.
+  mrsPeerConnectionDataChannelCreateObjectCallback data_channel_create_object;
+};
+
+MRS_API mrsResult MRS_CALL mrsPeerConnectionRegisterInteropCallbacks(
+    PeerConnectionHandle peerHandle,
+    mrsPeerConnectionInteropCallbacks* callbacks) noexcept;
 
 /// Register a callback fired once connected to a remote peer.
 /// To unregister, simply pass nullptr as the callback pointer.
@@ -310,18 +347,32 @@ MRS_API void MRS_CALL mrsPeerConnectionRegisterRenegotiationNeededCallback(
     PeerConnectionRenegotiationNeededCallback callback,
     void* user_data) noexcept;
 
-/// Register a callback fired when a remote track is added to the current peer
-/// connection.
+/// Register a callback fired when a remote media track is added to the current
+/// peer connection.
 MRS_API void MRS_CALL mrsPeerConnectionRegisterTrackAddedCallback(
     PeerConnectionHandle peerHandle,
     PeerConnectionTrackAddedCallback callback,
     void* user_data) noexcept;
 
-/// Register a callback fired when a remote track is removed from the current
-/// peer connection.
+/// Register a callback fired when a remote media track is removed from the
+/// current peer connection.
 MRS_API void MRS_CALL mrsPeerConnectionRegisterTrackRemovedCallback(
     PeerConnectionHandle peerHandle,
     PeerConnectionTrackRemovedCallback callback,
+    void* user_data) noexcept;
+
+/// Register a callback fired when a remote data channel is removed from the
+/// current peer connection.
+MRS_API void MRS_CALL mrsPeerConnectionRegisterDataChannelAddedCallback(
+    PeerConnectionHandle peerHandle,
+    PeerConnectionDataChannelAddedCallback callback,
+    void* user_data) noexcept;
+
+/// Register a callback fired when a remote data channel is removed from the
+/// current peer connection.
+MRS_API void MRS_CALL mrsPeerConnectionRegisterDataChannelRemovedCallback(
+    PeerConnectionHandle peerHandle,
+    PeerConnectionDataChannelRemovedCallback callback,
     void* user_data) noexcept;
 
 /// Register a callback fired when a video frame is available from a local video
@@ -446,6 +497,36 @@ mrsPeerConnectionAddLocalVideoTrack(PeerConnectionHandle peerHandle,
 MRS_API mrsResult MRS_CALL
 mrsPeerConnectionAddLocalAudioTrack(PeerConnectionHandle peerHandle) noexcept;
 
+enum class mrsDataChannelConfigFlags : uint32_t {
+  kOrdered = 0x1,
+  kReliable = 0x2,
+};
+
+inline mrsDataChannelConfigFlags operator|(mrsDataChannelConfigFlags a,
+                                           mrsDataChannelConfigFlags b) {
+  return (mrsDataChannelConfigFlags)((uint32_t)a | (uint32_t)b);
+}
+
+inline uint32_t operator&(mrsDataChannelConfigFlags a,
+                          mrsDataChannelConfigFlags b) {
+  return ((uint32_t)a | (uint32_t)b);
+}
+
+struct mrsDataChannelConfig {
+  int32_t id = -1;      // -1 for auto; >=0 for negotiated
+  const char* label{};  // optional; can be null or empty string
+  mrsDataChannelConfigFlags flags{};
+};
+
+struct mrsDataChannelCallbacks {
+  mrsDataChannelMessageCallback message_callback{};
+  void* message_user_data{};
+  mrsDataChannelBufferingCallback buffering_callback{};
+  void* buffering_user_data{};
+  mrsDataChannelStateCallback state_callback{};
+  void* state_user_data{};
+};
+
 /// Add a new data channel.
 /// This function has two distinct uses:
 /// - If id < 0, then it adds a new in-band data channel with an ID that will be
@@ -457,16 +538,10 @@ mrsPeerConnectionAddLocalAudioTrack(PeerConnectionHandle peerHandle) noexcept;
 /// the same ID on the remote peer to be able to use the channel.
 MRS_API mrsResult MRS_CALL mrsPeerConnectionAddDataChannel(
     PeerConnectionHandle peerHandle,
-    int id,             // -1 for auto, >=0 for negotiated
-    const char* label,  // optional, can be null or empty string
-    bool ordered,
-    bool reliable,
-    PeerConnectionDataChannelMessageCallback message_callback,
-    void* message_user_data,
-    PeerConnectionDataChannelBufferingCallback buffering_callback,
-    void* buffering_user_data,
-    PeerConnectionDataChannelStateCallback state_callback,
-    void* state_user_data) noexcept;
+    mrsDataChannelInteropHandle dataChannelInteropHandle,
+    mrsDataChannelConfig config,
+    mrsDataChannelCallbacks callbacks,
+    DataChannelHandle* dataChannelHandleOut) noexcept;
 
 MRS_API void MRS_CALL mrsPeerConnectionRemoveLocalVideoTrack(
     PeerConnectionHandle peerHandle) noexcept;
@@ -474,19 +549,28 @@ MRS_API void MRS_CALL mrsPeerConnectionRemoveLocalVideoTrack(
 MRS_API void MRS_CALL mrsPeerConnectionRemoveLocalAudioTrack(
     PeerConnectionHandle peerHandle) noexcept;
 
-MRS_API mrsResult MRS_CALL
-mrsPeerConnectionRemoveDataChannelById(PeerConnectionHandle peerHandle,
-                                       int id) noexcept;
+MRS_API mrsResult MRS_CALL mrsPeerConnectionRemoveDataChannel(
+    PeerConnectionHandle peerHandle,
+    DataChannelHandle dataChannelHandle) noexcept;
 
 MRS_API mrsResult MRS_CALL
-mrsPeerConnectionRemoveDataChannelByLabel(PeerConnectionHandle peerHandle,
-                                          const char* label) noexcept;
+mrsPeerConnectionSetLocalVideoTrackEnabled(PeerConnectionHandle peerHandle,
+                                           int32_t enabled) noexcept;
+
+MRS_API int32_t MRS_CALL mrsPeerConnectionIsLocalVideoTrackEnabled(
+    PeerConnectionHandle peerHandle) noexcept;
 
 MRS_API mrsResult MRS_CALL
-mrsPeerConnectionSendDataChannelMessage(PeerConnectionHandle peerHandle,
-                                        int id,
-                                        const void* data,
-                                        uint64_t size) noexcept;
+mrsPeerConnectionSetLocalAudioTrackEnabled(PeerConnectionHandle peerHandle,
+                                           int32_t enabled) noexcept;
+
+MRS_API int32_t MRS_CALL mrsPeerConnectionIsLocalAudioTrackEnabled(
+    PeerConnectionHandle peerHandle) noexcept;
+
+MRS_API mrsResult MRS_CALL
+mrsDataChannelSendMessage(DataChannelHandle dataChannelHandle,
+                          const void* data,
+                          uint64_t size) noexcept;
 
 /// Add a new ICE candidate received from a signaling service.
 MRS_API mrsResult MRS_CALL
